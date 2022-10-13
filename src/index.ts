@@ -1,4 +1,27 @@
+import e from 'express'
 import express from 'express'
+import { v4 as uuidv4 } from 'uuid'
+
+/**
+ * Interface's
+ */
+interface BrowserNetQueueInterface {
+  id: string,
+  offer: string,
+  iceCandidate: string,
+  response: express.Response
+}
+
+/**
+ * Constant's
+ */
+let QUEUE: BrowserNetQueueInterface[] = []
+const SSE_REQUEST_PATH = 'GET:/browsernet/sse'
+const SSE_RESPONSE_HEADER = {
+  'Content-Type': 'text/event-stream',
+  'Connection': 'keep-alive',
+  'Cache-Control': 'no-cache',
+}
 
 /**
  * 
@@ -6,38 +29,16 @@ import express from 'express'
  * @param response 
  * @param next 
  */
-export const browserConnect = (request: express.Request, response: express.Response, next: express.NextFunction) => {
-  //Switch condition to run sse or sdp based on request path
-  const key = `${request.method}:${request.path}`
-  switch (key) {
-    case 'GET:/browser-connect/sse':
-      initializeSSE(request, response)
-      next()
-      break
-    case 'GET:browser-connect/sdp':
-      next()
-      break
-    default:
-      next()
+export const browsernet = (request: express.Request, response: express.Response, next: express.NextFunction) => {
+  //Based on request path and method to run sse or sdp fetch
+  if (`${request.method}:${request.path}` === SSE_REQUEST_PATH) {
+    initializeSSE(request, response)
   }
 
   //Run next function
   next()
 }
 
-interface IData {
-  id: string,
-  sdp: string
-}
-
-/**
- * 
- * @param data 
- * @returns 
- */
-const formatData = (data: IData) => {
-  return `data: ${JSON.stringify(data)}\n\n`
-}
 
 /**
  * 
@@ -45,19 +46,32 @@ const formatData = (data: IData) => {
  * @param response 
  */
 const initializeSSE = (request: express.Request, response: express.Response) => {
-  //Write SSE header
-  response.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Connection': 'keep-alive',
-    'Cache-Control': 'no-cache'
-  })
+  //Get Payload
+  if(!request.query?.payload) {
+    response.writeHead(400, SSE_RESPONSE_HEADER)
+    response.end()
+  } 
+  const parsedPayload: Pick<BrowserNetQueueInterface, 'id' | 'offer' | 'iceCandidate'> = JSON.parse(request.query?.payload as string)
+  const data: BrowserNetQueueInterface = { ...parsedPayload, response }
 
-  //Set SSE response to global variable
-  global.sse = response
+  //Write SSE header
+  response.writeHead(200, SSE_RESPONSE_HEADER)
+
+  //Wrtie data to stream 
+  response.write(
+    formattedPayload(QUEUE[0])
+  )
 
   //Close sse connection
   request.on('close', () => {
-    global.sse = null
   })
 }
 
+/**
+* 
+* @param data 
+* @returns 
+*/
+const formattedPayload = (data: Pick<BrowserNetQueueInterface, "offer" | "iceCandidate">) => {
+  return `data: ${JSON.stringify(data)}\n\n`
+}

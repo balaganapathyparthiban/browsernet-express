@@ -107,7 +107,7 @@
     "src"
   ],
   "exclude": [
-    "lib",
-    "node_modules"
+    "node_modules",
+    "lib"
   ]
 }

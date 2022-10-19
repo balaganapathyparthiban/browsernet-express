@@ -1,6 +1,4 @@
-import e from 'express'
 import express from 'express'
-import { v4 as uuidv4 } from 'uuid'
 
 /**
  * Interface's
@@ -18,10 +16,17 @@ interface IceCandidateInterface {
 
 interface BrowserNetQueueInterface {
   id: string,
-  offer: OfferInterface,
-  iceCandidate: IceCandidateInterface[],
+  offer?: OfferInterface,
+  iceCandidate?: IceCandidateInterface[],
   deps: string[],
   response: express.Response
+}
+
+interface PayloadInterface {
+  type: string,
+  payload: {
+    [key: string]: any
+  }
 }
 
 /**
@@ -29,6 +34,11 @@ interface BrowserNetQueueInterface {
  */
 let QUEUE: BrowserNetQueueInterface[] = []
 const SSE_REQUEST_PATH = 'GET:/browsernet/sse'
+const SESSION_REQUEST_PATH = 'GET:/browsernet/session'
+const TYPE_NO_OFFER = 'NO_OFFER'
+const TYPE_OFFER = 'OFFER'
+const TYPE_ICE_CANDIDATE = 'ICE_CANDIDATE'
+const TYPE_ANWSER = 'ANWSER'
 const SSE_RESPONSE_HEADER = {
   'Content-Type': 'text/event-stream',
   'Connection': 'keep-alive',
@@ -45,6 +55,8 @@ export const browsernet = (request: express.Request, response: express.Response,
   //Based on request path and method to run sse or sdp fetch
   if (`${request.method}:${request.path}` === SSE_REQUEST_PATH) {
     initializeSSE(request, response)
+  } else if (`${request.method}:${request.path}` === SESSION_REQUEST_PATH) {
+    handleSession(request, response)
   }
 
   //Run next function
@@ -63,11 +75,9 @@ const initializeSSE = (request: express.Request, response: express.Response) => 
     response.writeHead(400, SSE_RESPONSE_HEADER)
     response.end()
   }
-  const parsedPayload: Pick<BrowserNetQueueInterface, 'id' | 'offer' | 'iceCandidate' | 'deps'> = JSON.parse(request.query?.payload as string)
-  const data: BrowserNetQueueInterface = {
+  const parsedPayload: Pick<BrowserNetQueueInterface, 'id' | 'deps'> = JSON.parse(request.query?.payload as string)
+  const data = {
     id: parsedPayload.id,
-    offer: parsedPayload.offer,
-    iceCandidate: parsedPayload.iceCandidate,
     deps: parsedPayload.deps,
     response
   }
@@ -77,29 +87,66 @@ const initializeSSE = (request: express.Request, response: express.Response) => 
 
   //Write Body
   if (QUEUE.length === 0) {
+    QUEUE = QUEUE.filter(each => {
+      each.response.end()
+      return each.id !== data.id
+    })
     QUEUE.push(data)
-    response.write(formattedPayload({ id: '', iceCandidate: [], offer: { sdp: '', type: '' } }))
+    response.write(
+      formattedPayload(
+        {
+          type: TYPE_NO_OFFER,
+          payload: {}
+        }
+      )
+    )
   } else {
-    let removeFromQueue = -1
+    let removeFromQueue = ''
 
     for (let i = 0; i < QUEUE.length; i++) {
-      if (data.deps.includes(QUEUE[i].id) || data.id === QUEUE[i].id) {
+      if (data.deps.includes(QUEUE[i].id) || data.id === QUEUE[i].id || !QUEUE[i].offer || QUEUE[i].iceCandidate?.length === 0) {
         continue;
       } else {
-        QUEUE[i].response.write(formattedPayload(data))
-        data.response.write(formattedPayload(QUEUE[i]))
-        removeFromQueue = i
+        response.write(
+          formattedPayload(
+            {
+              type: TYPE_OFFER,
+              payload: {
+                id: data?.id,
+                offer: QUEUE[i].offer,
+                icaCandidate: QUEUE[i].iceCandidate
+              }
+            }
+          )
+        )
+        removeFromQueue = QUEUE[i].id
         break;
       }
     }
 
-    if (removeFromQueue >= 0) {
-      QUEUE = QUEUE.filter((_, index) => index !== removeFromQueue)
+    if (removeFromQueue) {
+      QUEUE = QUEUE.filter((each) => each.id !== removeFromQueue)
     } else {
+      QUEUE = QUEUE.filter(each => {
+        each.response.end()
+        return each.id !== data.id
+      })
       QUEUE.push(data)
-      response.write(formattedPayload({ id: '', iceCandidate: [], offer: { sdp: '', type: '' } }))
+      response.write(
+        formattedPayload(
+          {
+            type: TYPE_NO_OFFER,
+            payload: {}
+          }
+        )
+      )
     }
+
   }
+  
+  console.log('-----------')
+  QUEUE.forEach(each => console.log(each.id))
+  console.log('-----------')
 
   //Close sse connection
   request.on('close', () => {
@@ -108,14 +155,19 @@ const initializeSSE = (request: express.Request, response: express.Response) => 
 }
 
 /**
+ * 
+ * @param request 
+ * @param response 
+ */
+const handleSession = (request: express.Request, response: express.Response) => {
+
+}
+
+/**
 * 
 * @param data 
 * @returns 
 */
-const formattedPayload = (data: Pick<BrowserNetQueueInterface, "id" | "offer" | "iceCandidate">) => {
-  return `data: ${JSON.stringify({
-    id: data.id,
-    offer: data.offer,
-    iceCandidate: data.iceCandidate,
-  })}\n\n`
+const formattedPayload = (data: PayloadInterface) => {
+  return `data: ${JSON.stringify(data)}\n\n`
 }

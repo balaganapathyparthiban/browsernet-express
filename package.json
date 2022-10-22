@@ -8,7 +8,7 @@
     "lib"
   ],
   "scripts": {
-    "start": "tsc --watch",
+    "start": "npm link && tsc --watch",
     "build": "tsc --build"
   },
   "repository": {

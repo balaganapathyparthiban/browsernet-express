@@ -3,26 +3,26 @@ import express from 'express'
 /**
  * Interface's
  */
-interface OfferInterface {
+interface Offer {
   type: string | any,
   sdp: string | any
 }
 
-interface IceCandidateInterface {
+interface IceCandidate {
   candidate: string | any,
   sdpMid: string | any,
   sdpMLineIndex: number | any
 }
 
-interface BrowserNetQueueInterface {
+interface BrowserNetQueue {
   id: string,
-  offer?: OfferInterface,
-  iceCandidate?: IceCandidateInterface[],
-  deps: string[],
+  connectionID?: string,
+  iceCandidate?: IceCandidate[],
+  offer?: Offer,
   response: express.Response
 }
 
-interface PayloadInterface {
+interface Data {
   type: string,
   payload: {
     [key: string]: any
@@ -32,12 +32,14 @@ interface PayloadInterface {
 /**
  * Constant's
  */
-let QUEUE: BrowserNetQueueInterface[] = []
+let CONNECTIONS: { [key: string]: BrowserNetQueue } = {}
 const SSE_REQUEST_PATH = 'GET:/browsernet/sse'
 const SESSION_REQUEST_PATH = 'GET:/browsernet/session'
+const TYPE_NEW_CONNECTION = 'NEW_CONNECTION'
 const TYPE_NO_OFFER = 'NO_OFFER'
 const TYPE_OFFER = 'OFFER'
 const TYPE_ICE_CANDIDATE = 'ICE_CANDIDATE'
+const TYPE_SHARE_ICE_CANDIDATE = 'SHARE_ICE_CANDIDATE'
 const TYPE_ANWSER = 'ANWSER'
 const SSE_RESPONSE_HEADER = {
   'Content-Type': 'text/event-stream',
@@ -70,30 +72,27 @@ export const browsernet = (request: express.Request, response: express.Response,
  * @param response 
  */
 const initializeSSE = (request: express.Request, response: express.Response) => {
-  //Get Payload
-  if (!request.query?.payload) {
+  //Get Data
+  const data: Data = JSON.parse(request?.query?.data as string)
+  if (!data || data?.type !== TYPE_NEW_CONNECTION || !data?.payload?.id) {
     response.writeHead(400, SSE_RESPONSE_HEADER)
     response.end()
   }
-  const parsedPayload: Pick<BrowserNetQueueInterface, 'id' | 'deps'> = JSON.parse(request.query?.payload as string)
-  const data = {
-    id: parsedPayload.id,
-    deps: parsedPayload.deps,
-    response
+
+  const payload: Pick<BrowserNetQueue, 'id' | 'response'> = {
+    id: data?.payload?.id,
+    response,
   }
 
   //Write SSE header
   response.writeHead(200, SSE_RESPONSE_HEADER)
 
   //Write Body
-  if (QUEUE.length === 0) {
-    QUEUE = QUEUE.filter(each => {
-      each.response.end()
-      return each.id !== data.id
-    })
-    QUEUE.push(data)
+  if (Object.keys(CONNECTIONS).length === 0) {
+    CONNECTIONS[payload?.id] = payload
+
     response.write(
-      formattedPayload(
+      formatData(
         {
           type: TYPE_NO_OFFER,
           payload: {}
@@ -101,56 +100,37 @@ const initializeSSE = (request: express.Request, response: express.Response) => 
       )
     )
   } else {
-    let removeFromQueue = ''
-
-    for (let i = 0; i < QUEUE.length; i++) {
-      if (data.deps.includes(QUEUE[i].id) || data.id === QUEUE[i].id || !QUEUE[i].offer || QUEUE[i].iceCandidate?.length === 0) {
+    for (let key in CONNECTIONS) {
+      if (data?.payload?.connections?.includes(CONNECTIONS[key]?.id) || payload?.id === CONNECTIONS[key]?.id || !CONNECTIONS[key]?.offer || CONNECTIONS[key]?.iceCandidate?.length === 0) {
         continue;
       } else {
+        CONNECTIONS[key].connectionID = payload?.id
+        CONNECTIONS[payload.id] = {
+          ...payload,
+          connectionID: CONNECTIONS[key]?.id
+        }
+
         response.write(
-          formattedPayload(
-            {
-              type: TYPE_OFFER,
-              payload: {
-                id: data?.id,
-                offer: QUEUE[i].offer,
-                icaCandidate: QUEUE[i].iceCandidate
-              }
+          formatData({
+            type: TYPE_OFFER,
+            payload: {
+              id: CONNECTIONS[key]?.id,
+              offer: CONNECTIONS[key]?.offer,
+              iceCandidate: CONNECTIONS[key]?.iceCandidate
             }
-          )
+          })
         )
-        removeFromQueue = QUEUE[i].id
         break;
       }
     }
-
-    if (removeFromQueue) {
-      QUEUE = QUEUE.filter((each) => each.id !== removeFromQueue)
-    } else {
-      QUEUE = QUEUE.filter(each => {
-        each.response.end()
-        return each.id !== data.id
-      })
-      QUEUE.push(data)
-      response.write(
-        formattedPayload(
-          {
-            type: TYPE_NO_OFFER,
-            payload: {}
-          }
-        )
-      )
-    }
-
   }
-  
-  console.log('-----------')
-  QUEUE.forEach(each => console.log(each.id))
-  console.log('-----------')
 
   //Close sse connection
   request.on('close', () => {
-    QUEUE = QUEUE.filter((each) => each.id !== data.id)
+    console.log(payload?.id, CONNECTIONS[payload?.id]?.connectionID!)
+    delete CONNECTIONS[CONNECTIONS[payload?.id]?.connectionID!]
+    delete CONNECTIONS[payload?.id]
+    console.log(CONNECTIONS)
   })
 }
 
@@ -160,7 +140,97 @@ const initializeSSE = (request: express.Request, response: express.Response) => 
  * @param response 
  */
 const handleSession = (request: express.Request, response: express.Response) => {
+  //Get Data
+  const data: Data = JSON.parse(request?.query?.data as string)
+  if (!data || !data?.type || !data?.payload) {
+    return response.send({ type: 'FAILED_INVALID_DATA', payload: {} })
+  }
 
+  switch (data?.type) {
+    case TYPE_OFFER: {
+      if (!data?.payload?.id || !data?.payload?.offer) {
+        response.send({ type: 'FAILED_INCORRECT_PAYLOAD', payload: {} })
+        break
+      }
+
+      CONNECTIONS[data?.payload?.id] = {
+        ...CONNECTIONS[data?.payload?.id],
+        offer: data?.payload?.offer,
+      }
+
+      response.send({ type: 'OFFER_ADDED', payload: {} })
+      break
+    }
+    case TYPE_ANWSER: {
+      if (!data?.payload?.id || !data?.payload?.answer) {
+        response.send({ type: 'FAILED_INCORRECT_PAYLOAD', payload: {} })
+        break
+      }
+
+      const connectionID = CONNECTIONS[data?.payload?.id]?.connectionID!
+      CONNECTIONS[connectionID]?.response?.write(
+        formatData({
+          type: TYPE_ANWSER,
+          payload: {
+            id: data?.payload?.id,
+            answer: data?.payload?.answer,
+          }
+        })
+      )
+
+      response.send({ type: 'ANSWER_SENT_SUCCESSFULLY', payload: {} })
+      break
+    }
+    case TYPE_ICE_CANDIDATE: {
+      if (!data?.payload?.id || !data?.payload?.iceCandidate) {
+        response.send({ type: 'FAILED_INCORRECT_PAYLOAD', payload: {} })
+        break
+      }
+
+      CONNECTIONS[data?.payload?.id].iceCandidate = [...(CONNECTIONS[data?.payload?.id]?.iceCandidate! || []), data?.payload?.iceCandidate]
+
+      const connectionID = CONNECTIONS[data?.payload?.id]?.connectionID!
+      console.log(CONNECTIONS[data?.payload?.id]?.iceCandidate?.length)
+      CONNECTIONS[connectionID]?.response?.write(
+        formatData({
+          type: TYPE_ICE_CANDIDATE,
+          payload: {
+            id: data?.payload?.id,
+            iceCandidate: data?.payload?.iceCandidate
+          }
+        })
+      )
+
+      response.send({ type: 'ICE_CANDIDATE_ADDED', payload: {} })
+      break
+    }
+    case TYPE_SHARE_ICE_CANDIDATE: {
+      if (!data?.payload?.id) {
+        response.send({ type: 'FAILED_INCORRECT_PAYLOAD', payload: {} })
+        break
+      }
+
+      const connectionID = CONNECTIONS[data?.payload?.id]?.connectionID!
+      CONNECTIONS[data?.payload?.id]?.iceCandidate?.forEach((iceCandidate) => {
+        CONNECTIONS[connectionID]?.response?.write(
+          formatData({
+            type: TYPE_ICE_CANDIDATE,
+            payload: {
+              id: data?.payload?.id,
+              iceCandidate: iceCandidate
+            }
+          })
+        )
+      })
+
+      response.send({ type: 'ICE_CANDIDATE_SHARED', payload: {} })
+      break
+    }
+    default: {
+      response.send({ type: 'FAILED_INVALID_TYPE', payload: {} })
+      break
+    }
+  }
 }
 
 /**
@@ -168,6 +238,6 @@ const handleSession = (request: express.Request, response: express.Response) => 
 * @param data 
 * @returns 
 */
-const formattedPayload = (data: PayloadInterface) => {
+const formatData = (data: Data) => {
   return `data: ${JSON.stringify(data)}\n\n`
 }

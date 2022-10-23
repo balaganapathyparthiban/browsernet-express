@@ -101,7 +101,7 @@ const initializeSSE = (request: express.Request, response: express.Response) => 
     )
   } else {
     for (let key in CONNECTIONS) {
-      if (data?.payload?.connections?.includes(CONNECTIONS[key]?.id) || payload?.id === CONNECTIONS[key]?.id || !CONNECTIONS[key]?.offer || CONNECTIONS[key]?.iceCandidate?.length === 0) {
+      if (data?.payload?.connections?.includes(CONNECTIONS[key]?.id) || payload?.id === CONNECTIONS[key]?.id || !CONNECTIONS[key]?.offer) {
         continue;
       } else {
         CONNECTIONS[key].connectionID = payload?.id
@@ -116,7 +116,6 @@ const initializeSSE = (request: express.Request, response: express.Response) => 
             payload: {
               id: CONNECTIONS[key]?.id,
               offer: CONNECTIONS[key]?.offer,
-              iceCandidate: CONNECTIONS[key]?.iceCandidate
             }
           })
         )
@@ -127,10 +126,8 @@ const initializeSSE = (request: express.Request, response: express.Response) => 
 
   //Close sse connection
   request.on('close', () => {
-    console.log(payload?.id, CONNECTIONS[payload?.id]?.connectionID!)
     delete CONNECTIONS[CONNECTIONS[payload?.id]?.connectionID!]
     delete CONNECTIONS[payload?.id]
-    console.log(CONNECTIONS)
   })
 }
 
@@ -190,7 +187,6 @@ const handleSession = (request: express.Request, response: express.Response) => 
       CONNECTIONS[data?.payload?.id].iceCandidate = [...(CONNECTIONS[data?.payload?.id]?.iceCandidate! || []), data?.payload?.iceCandidate]
 
       const connectionID = CONNECTIONS[data?.payload?.id]?.connectionID!
-      console.log(CONNECTIONS[data?.payload?.id]?.iceCandidate?.length)
       CONNECTIONS[connectionID]?.response?.write(
         formatData({
           type: TYPE_ICE_CANDIDATE,
